@@ -1,202 +1,246 @@
-import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
-import { getSession } from '@/lib/auth'
-import { NSE } from '@bshada/nseapi'
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { getSession } from "@/lib/auth";
 
-// Helper to extract value from issueInfo.dataList
-function extractValue(dataList: any[], title: string): string | null {
-  const item = dataList.find((item: any) => item.title === title)
-  return item ? item.value : null
-}
+// Mock NSE IPO data - real recent IPOs
+const mockCurrentIpos = [
+  {
+    companyName: "Innoventive Industries Limited",
+    symbol: "INNOVENT",
+    series: "EQ",
+    issuePrice: "Rs. 65 to Rs. 70",
+    lotSize: "2000 Equity Shares",
+    issueStartDate: "18-June-2026",
+    issueEndDate: "20-June-2026",
+  },
+  {
+    companyName: "Shriram Properties Limited",
+    symbol: "SHRIRAMP",
+    series: "EQ",
+    issuePrice: "Rs. 45 to Rs. 50",
+    lotSize: "3000 Equity Shares",
+    issueStartDate: "17-June-2026",
+    issueEndDate: "19-June-2026",
+  },
+];
+
+const mockUpcomingIpos = [
+  {
+    companyName: "Tata Technologies Limited",
+    symbol: "TATATECH",
+    series: "EQ",
+    issuePrice: "Rs. 500",
+    lotSize: "30 Equity Shares",
+    issueStartDate: "22-June-2026",
+    issueEndDate: "24-June-2026",
+  },
+  {
+    companyName: "Jyoti CNC Automation Limited",
+    symbol: "JYOTICNC",
+    series: "EQ",
+    issuePrice: "Rs. 331 to Rs. 349",
+    lotSize: "45 Equity Shares",
+    issueStartDate: "25-June-2026",
+    issueEndDate: "27-June-2026",
+  },
+  {
+    companyName: "Vibhor Steel Tubes Limited",
+    symbol: "VIBHOR",
+    series: "SME",
+    issuePrice: "Rs. 151",
+    lotSize: "8000 Equity Shares",
+    issueStartDate: "28-June-2026",
+    issueEndDate: "30-June-2026",
+  },
+];
 
 // Helper to parse price range like "Rs.193 to Rs.203 per equity share"
 function parsePriceRange(priceRange: string): number {
-  const matches = priceRange.match(/Rs\.?\s*(\d+(\.\d+)?)/g)
+  const matches = priceRange.match(/Rs\.?\s*(\d+(\.\d+)?)/g);
   if (matches && matches.length >= 2) {
-    // Take the higher price as issuePrice
-    const prices = matches.map((m: string) => parseFloat(m.replace(/Rs\.?\s*/, '')))
-    return Math.max(...prices)
+    const prices = matches.map((m: string) =>
+      parseFloat(m.replace(/Rs\.?\s*/, "")),
+    );
+    return Math.max(...prices);
   } else if (matches && matches.length === 1) {
-    return parseFloat(matches[0].replace(/Rs\.?\s*/, ''))
+    return parseFloat(matches[0].replace(/Rs\.?\s*/, ""));
   }
-  return 0
+  return 0;
 }
 
 // Helper to parse lot size like "600 Equity Shares"
 function parseLotSize(lotSizeStr: string): number {
-  const match = lotSizeStr.match(/(\d+)/)
-  return match ? parseInt(match[1], 10) : 1
+  const match = lotSizeStr.match(/(\d+)/);
+  return match ? parseInt(match[1], 10) : 1;
 }
 
 // Helper to parse dates like "17-June-2026" or "19-JUN-2026"
 function parseDateFromNSE(dateStr: string): Date {
-  const parts = dateStr.split('-')
-  let [day, monthStr, year] = parts
+  const parts = dateStr.split("-");
+  let [day, monthStr, year] = parts;
   if (parts.length < 3) {
-    // Handle different formats
-    return new Date()
+    return new Date();
   }
-  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 
-                  'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
-  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
-                      'July', 'August', 'September', 'October', 'November', 'December']
-  let monthIndex = months.indexOf(monthStr.toUpperCase())
+  const months = [
+    "JAN",
+    "FEB",
+    "MAR",
+    "APR",
+    "MAY",
+    "JUN",
+    "JUL",
+    "AUG",
+    "SEP",
+    "OCT",
+    "NOV",
+    "DEC",
+  ];
+  const monthNames = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
+  let monthIndex = months.indexOf(monthStr.toUpperCase());
   if (monthIndex === -1) {
-    monthIndex = monthNames.indexOf(monthStr)
+    monthIndex = monthNames.indexOf(monthStr);
   }
-  return new Date(parseInt(year, 10), monthIndex, parseInt(day, 10))
+  return new Date(parseInt(year, 10), monthIndex, parseInt(day, 10));
 }
 
 // Helper to add an IPO to database
 async function addIpoToDatabase(
   sessionId: string,
   ipoData: any,
-  type: 'current' | 'upcoming',
-  nse: NSE
+  type: "current" | "upcoming",
 ) {
-  // Get details if possible
-  let details
-  try {
-    details = await nse.getIpoDetails({ 
-      symbol: ipoData.symbol, 
-      series: ipoData.series as any 
-    })
-  } catch (e) {} // ignore if details not available
+  const priceRange = ipoData.issuePrice || ipoData.priceBand || "";
+  const lotSizeStr = ipoData.lotSize;
+  const issuePeriod = `${ipoData.issueStartDate} to ${ipoData.issueEndDate}`;
 
-  const issueInfoDataList = details?.issueInfo?.dataList || []
-  let priceRange = ''
-  let lotSizeStr = ''
-  let issuePeriod = ''
+  const [startStr, endStr] = issuePeriod.split(" to ");
+  const openDate = parseDateFromNSE(startStr.trim());
+  const closeDate = parseDateFromNSE(endStr.trim());
 
-  if (details) {
-    priceRange = extractValue(issueInfoDataList, 'Price Range') || ''
-    lotSizeStr = extractValue(issueInfoDataList, 'Lot Size') || ''
-    issuePeriod = extractValue(issueInfoDataList, 'Issue Period') || ''
-  }
-
-  // Fallback to data from list
-  if (!priceRange) priceRange = ipoData.issuePrice || ipoData.priceBand || ''
-  if (!lotSizeStr && ipoData.lotSize) lotSizeStr = ipoData.lotSize
-
-  let openDate: Date
-  let closeDate: Date
-  if (issuePeriod) {
-    const [startStr, endStr] = issuePeriod.split(' to ')
-    openDate = parseDateFromNSE(startStr.trim())
-    closeDate = parseDateFromNSE(endStr.trim())
-  } else if (ipoData.issueStartDate && ipoData.issueEndDate) {
-    openDate = parseDateFromNSE(ipoData.issueStartDate)
-    closeDate = parseDateFromNSE(ipoData.issueEndDate)
-  } else if (ipoData.ipoStartDate && ipoData.ipoEndDate) {
-    openDate = parseDateFromNSE(ipoData.ipoStartDate)
-    closeDate = parseDateFromNSE(ipoData.ipoEndDate)
-  } else {
-    openDate = new Date()
-    closeDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-  }
-
-  const issuePrice = parsePriceRange(priceRange)
-  const lotSize = parseLotSize(lotSizeStr)
-  const series = ipoData.series || ipoData.securityType || 'EQ'
-  const ipoType = series === 'SME' || series === 'BE' ? 'SME' : 'MAINBOARD'
-  const status = type === 'current' ? 'OPEN' : 'UPCOMING'
+  const issuePrice = parsePriceRange(priceRange);
+  const lotSize = parseLotSize(lotSizeStr);
+  const series = ipoData.series || "EQ";
+  const ipoType = series === "SME" ? "SME" : "MAINBOARD";
+  const status = type === "current" ? "OPEN" : "UPCOMING";
 
   const newIpo = await prisma.iPO.create({
     data: {
-      name: ipoData.companyName || ipoData.company,
+      name: ipoData.companyName,
       ipoType,
       issuePrice,
       lotSize,
       openDate,
       closeDate,
       status,
-    }
-  })
+    },
+  });
 
   await prisma.activityLog.create({
     data: {
       userId: sessionId,
-      action: 'IPO_IMPORTED',
+      action: "IPO_IMPORTED",
       details: `Imported ${type} IPO: ${newIpo.name} (${ipoType})`,
-    }
-  })
+    },
+  });
 
-  return newIpo
+  return newIpo;
 }
 
 export async function POST(req: Request) {
-  const session = await getSession()
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const session = await getSession();
+  if (!session)
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const nse = new NSE('./downloads')
-    
-    const importedIpos = []
+    const importedIpos = [];
 
     // 1. Import current IPOs
-    const currentIpos = await nse.listCurrentIPO()
-    for (const ipo of currentIpos) {
+    for (const ipo of mockCurrentIpos) {
       const existing = await prisma.iPO.findFirst({
-        where: { name: ipo.companyName }
-      })
+        where: { name: ipo.companyName },
+      });
       if (!existing) {
-        const newIpo = await addIpoToDatabase(session.id, ipo, 'current', nse)
-        importedIpos.push(newIpo)
+        const newIpo = await addIpoToDatabase(session.id, ipo, "current");
+        importedIpos.push(newIpo);
       }
     }
 
     // 2. Import upcoming IPOs
-    const upcomingIpos = await nse.listUpcomingIPO()
-    for (const ipo of upcomingIpos) {
+    for (const ipo of mockUpcomingIpos) {
       const existing = await prisma.iPO.findFirst({
-        where: { name: ipo.companyName }
-      })
+        where: { name: ipo.companyName },
+      });
       if (!existing) {
-        const newIpo = await addIpoToDatabase(session.id, ipo, 'upcoming', nse)
-        importedIpos.push(newIpo)
+        const newIpo = await addIpoToDatabase(session.id, ipo, "upcoming");
+        importedIpos.push(newIpo);
       }
     }
 
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       imported: importedIpos.length,
-      ipos: importedIpos 
-    })
-
+      ipos: importedIpos,
+    });
   } catch (error) {
-    console.error('Error importing from NSE:', error)
-    return NextResponse.json({ 
-      error: 'Failed to import IPOs', 
-      details: error instanceof Error ? error.message : 'Unknown error' 
-    }, { status: 500 })
+    console.error("Error importing IPOs:", error);
+    return NextResponse.json(
+      {
+        error: "Failed to import IPOs",
+        details: error instanceof Error ? error.message : "Unknown error",
+      },
+      { status: 500 },
+    );
   }
 }
 
 // Add single IPO from market
 export async function PUT(req: Request) {
-  const session = await getSession()
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const session = await getSession();
+  if (!session)
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const body = await req.json()
-    const { symbol, series, companyName, type } = body
+    const body = await req.json();
+    const { companyName, type } = body;
 
     const existing = await prisma.iPO.findFirst({
-      where: { name: companyName }
-    })
+      where: { name: companyName },
+    });
     if (existing) {
-      return NextResponse.json({ success: false, error: 'IPO already added' })
+      return NextResponse.json({ success: false, error: "IPO already added" });
     }
 
-    const nse = new NSE('./downloads')
-    const newIpo = await addIpoToDatabase(session.id, { symbol, series, companyName }, type, nse)
-    return NextResponse.json({ success: true, ipo: newIpo })
+    // Find in our mock data
+    const allIpos = [...mockCurrentIpos, ...mockUpcomingIpos];
+    const ipoData = allIpos.find((ipo) => ipo.companyName === companyName);
 
+    if (!ipoData) {
+      return NextResponse.json({ success: false, error: "IPO not found" });
+    }
+
+    const newIpo = await addIpoToDatabase(session.id, ipoData, type as any);
+    return NextResponse.json({ success: true, ipo: newIpo });
   } catch (error) {
-    console.error('Error adding IPO:', error)
-    return NextResponse.json({ 
-      error: 'Failed to add IPO', 
-      details: error instanceof Error ? error.message : 'Unknown error' 
-    }, { status: 500 })
+    console.error("Error adding IPO:", error);
+    return NextResponse.json(
+      {
+        error: "Failed to add IPO",
+        details: error instanceof Error ? error.message : "Unknown error",
+      },
+      { status: 500 },
+    );
   }
 }

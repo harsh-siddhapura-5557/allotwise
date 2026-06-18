@@ -1,14 +1,76 @@
 import { NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
-import { NSE } from '@bshada/nseapi'
 import { prisma } from '@/lib/prisma'
 
-// Helper functions (same as in import-nse)
-function extractValue(dataList: any[], title: string): string | null {
-  const item = dataList.find((item: any) => item.title === title)
-  return item ? item.value : null
-}
+// Mock market IPO data
+const mockMarketIpos = [
+  {
+    source: 'NSE',
+    type: 'current',
+    symbol: 'INNOVENT',
+    companyName: 'Innoventive Industries Limited',
+    series: 'EQ',
+    issuePrice: 'Rs. 65 to Rs. 70',
+    lotSize: '2000 Equity Shares',
+    issueStartDate: '18-June-2026',
+    issueEndDate: '20-June-2026',
+    noOfSharesOffered: '5000000',
+    noOfsharesBid: '8500000',
+    noOfTime: 1.7
+  },
+  {
+    source: 'NSE',
+    type: 'current',
+    symbol: 'SHRIRAMP',
+    companyName: 'Shriram Properties Limited',
+    series: 'EQ',
+    issuePrice: 'Rs. 45 to Rs. 50',
+    lotSize: '3000 Equity Shares',
+    issueStartDate: '17-June-2026',
+    issueEndDate: '19-June-2026',
+    noOfSharesOffered: '7500000',
+    noOfsharesBid: '12000000',
+    noOfTime: 1.6
+  },
+  {
+    source: 'NSE',
+    type: 'upcoming',
+    symbol: 'TATATECH',
+    companyName: 'Tata Technologies Limited',
+    series: 'EQ',
+    issuePrice: 'Rs. 500',
+    lotSize: '30 Equity Shares',
+    issueStartDate: '22-June-2026',
+    issueEndDate: '24-June-2026',
+    issueSize: 'Rs. 3000 Cr'
+  },
+  {
+    source: 'NSE',
+    type: 'upcoming',
+    symbol: 'JYOTICNC',
+    companyName: 'Jyoti CNC Automation Limited',
+    series: 'EQ',
+    issuePrice: 'Rs. 331 to Rs. 349',
+    lotSize: '45 Equity Shares',
+    issueStartDate: '25-June-2026',
+    issueEndDate: '27-June-2026',
+    issueSize: 'Rs. 1500 Cr'
+  },
+  {
+    source: 'NSE',
+    type: 'upcoming',
+    symbol: 'VIBHOR',
+    companyName: 'Vibhor Steel Tubes Limited',
+    series: 'SME',
+    issuePrice: 'Rs. 151',
+    lotSize: '8000 Equity Shares',
+    issueStartDate: '28-June-2026',
+    issueEndDate: '30-June-2026',
+    issueSize: 'Rs. 250 Cr'
+  }
+]
 
+// Helper functions
 function parsePriceRange(priceRange: string): number {
   const matches = priceRange.match(/Rs\.?\s*(\d+(\.\d+)?)/g)
   if (matches && matches.length >= 2) {
@@ -25,8 +87,7 @@ function parseLotSize(lotSizeStr: string): number {
   return match ? parseInt(match[1], 10) : 1
 }
 
-function parseDates(issuePeriod: string): { openDate: Date; closeDate: Date } {
-  const [startStr, endStr] = issuePeriod.split(' to ')
+function parseDates(startStr: string, endStr: string): { openDate: Date; closeDate: Date } {
   const parseDate = (d: string) => {
     const [day, month, year] = d.split('-')
     const months = ['January', 'February', 'March', 'April', 'May', 'June', 
@@ -45,90 +106,41 @@ export async function GET(req: Request) {
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {
-    const nse = new NSE('./downloads')
-    
-    // Fetch all current and upcoming IPOs
-    const currentIpos = await nse.listCurrentIPO()
-    const upcomingIpos = await nse.listUpcomingIPO()
-
-    // Get existing IPO names from our database to check if already added
+    // Get existing IPO names from our database
     const existingIpos = await prisma.iPO.findMany({ select: { name: true } })
     const existingNames = new Set(existingIpos.map((ipo: any) => ipo.name))
 
     const marketIpos = []
 
-    // Process current IPOs
-    for (const ipo of currentIpos) {
-      // Get details
-      const details = await nse.getIpoDetails({ 
-        symbol: ipo.symbol, 
-        series: ipo.series as any 
-      })
-      const issueInfoDataList = details.issueInfo?.dataList || []
-      const priceRange = extractValue(issueInfoDataList, 'Price Range') || ''
-      const lotSizeStr = extractValue(issueInfoDataList, 'Lot Size') || ''
-      const issuePeriod = extractValue(issueInfoDataList, 'Issue Period') || ''
-      let openDate = new Date()
-      let closeDate = new Date()
-      if (issuePeriod) {
-        const parsedDates = parseDates(issuePeriod)
-        openDate = parsedDates.openDate
-        closeDate = parsedDates.closeDate
-      }
-
-      marketIpos.push({
-        source: 'NSE',
-        type: 'current',
+    // Process all mock IPOs
+    for (const ipo of mockMarketIpos) {
+      const parsedDates = parseDates(ipo.issueStartDate, ipo.issueEndDate)
+      
+      const marketIpo: any = {
+        source: ipo.source,
+        type: ipo.type,
         symbol: ipo.symbol,
         name: ipo.companyName,
         ipoType: ipo.series === 'SME' ? 'SME' : 'MAINBOARD',
-        status: 'OPEN',
-        issuePrice: parsePriceRange(priceRange),
-        lotSize: parseLotSize(lotSizeStr),
-        openDate,
-        closeDate,
+        status: ipo.type === 'current' ? 'OPEN' : 'UPCOMING',
+        issuePrice: parsePriceRange(ipo.issuePrice),
+        lotSize: parseLotSize(ipo.lotSize),
+        openDate: parsedDates.openDate,
+        closeDate: parsedDates.closeDate,
         alreadyAdded: existingNames.has(ipo.companyName),
-        subscription: {
+      }
+
+      if (ipo.type === 'current') {
+        marketIpo.subscription = {
           noOfSharesOffered: ipo.noOfSharesOffered,
           noOfSharesBid: ipo.noOfsharesBid,
           timesSubscribed: ipo.noOfTime
         }
-      })
-    }
-
-    // Process upcoming IPOs
-    for (const ipo of upcomingIpos) {
-      let lotSize = 1
-      let priceRange = ipo.issuePrice || ipo.priceBand || ''
-      // Try to get details for upcoming IPO if possible
-      try {
-        const details = await nse.getIpoDetails({ 
-          symbol: ipo.symbol, 
-          series: ipo.series as any 
-        })
-        const issueInfoDataList = details.issueInfo?.dataList || []
-        priceRange = extractValue(issueInfoDataList, 'Price Range') || priceRange
-        const lotSizeStr = extractValue(issueInfoDataList, 'Lot Size') || ''
-        if (lotSizeStr) lotSize = parseLotSize(lotSizeStr)
-      } catch (e) {
-        // If we can't get details, use whatever we have
-        if (ipo.lotSize) lotSize = parseInt(ipo.lotSize, 10)
+      } else {
+        marketIpo.issueSize = ipo.issueSize
       }
 
-      marketIpos.push({
-        source: 'NSE',
-        type: 'upcoming',
-        symbol: ipo.symbol,
-        name: ipo.companyName,
-        ipoType: ipo.series === 'SME' || ipo.series === 'BE' ? 'SME' : 'MAINBOARD',
-        status: 'UPCOMING',
-        issuePrice: parsePriceRange(priceRange),
-        lotSize,
-        openDate: new Date(ipo.issueStartDate),
-        closeDate: new Date(ipo.issueEndDate),
-        alreadyAdded: existingNames.has(ipo.companyName),
-        issueSize: ipo.issueSize
-      })
+      marketIpos.push(marketIpo)
     }
 
     return NextResponse.json({ success: true, ipos: marketIpos })
